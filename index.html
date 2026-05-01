@@ -565,9 +565,9 @@
 
 <!-- Tab switcher -->
 <div class="tab-row">
-  <button class="tab active" onclick="switchTab('post')">投稿</button>
-  <button class="tab" onclick="switchTab('settings')">設定</button>
-  <button class="tab" onclick="switchTab('edit')">ボタン編集</button>
+  <button class="tab active" data-tab="post" onclick="switchTab('post')">投稿</button>
+  <button class="tab" data-tab="settings" onclick="switchTab('settings')">設定</button>
+  <button class="tab" data-tab="edit" onclick="switchTab('edit')">ボタン編集</button>
 </div>
 
 <!-- ── POST TAB ─────────────────────────────── -->
@@ -738,4 +738,181 @@ function setVis(btn) {
 function saveSettings() {
   settings.instanceUrl = document.getElementById('instanceUrl').value.replace(/\/$/, '');
   settings.accessToken = document.getElementById('accessToken').value.trim();
-  localStorage.setItem('qp_settings', JSON.stringify
+  localStorage.setItem('qp_settings', JSON.stringify(settings));
+  toast('設定を保存しました', 'ok');
+}
+
+async function testConnection() {
+  saveSettings();
+  setStatus('loading', '接続確認中…');
+  await testConnectionSilent(true);
+}
+
+async function testConnectionSilent(showToast = false) {
+  if (!settings.instanceUrl || !settings.accessToken) {
+    setStatus('err', '設定タブでインスタンスURLとトークンを入力してください');
+    return;
+  }
+  try {
+    const res = await fetch(`${settings.instanceUrl}/api/i`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ i: settings.accessToken })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message || data.error.code);
+    setStatus('ok', `接続中: @${data.username}@${new URL(settings.instanceUrl).hostname}`);
+    if (showToast) toast('接続成功 ✓', 'ok');
+  } catch (e) {
+    setStatus('err', '接続エラー: ' + e.message);
+    if (showToast) toast('接続失敗: ' + e.message, 'err');
+  }
+}
+
+// ── Post ──────────────────────────────────────────────────────────
+async function postNote(patternId) {
+  if (!settings.instanceUrl || !settings.accessToken) {
+    toast('先に設定タブで設定してください', 'err');
+    switchTab('settings');
+    return;
+  }
+  const pattern = patterns.find(p => p.id === patternId);
+  if (!pattern || !pattern.variants.length) return;
+
+  const text = pattern.variants[Math.floor(Math.random() * pattern.variants.length)];
+
+  // Visual feedback
+  const btn = document.querySelector(`[data-id="${patternId}"]`);
+  if (btn) btn.classList.add('posting');
+
+  try {
+    const res = await fetch(`${settings.instanceUrl}/api/notes/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        i: settings.accessToken,
+        text,
+        visibility: settings.visibility
+      })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message || data.error.code);
+
+    // Show preview
+    const preview = document.getElementById('postPreview');
+    document.getElementById('postPreviewText').textContent = `「${text}」`;
+    preview.classList.add('visible');
+
+    toast(`投稿しました: 「${text}」`, 'ok');
+  } catch (e) {
+    toast('投稿エラー: ' + e.message, 'err');
+  } finally {
+    if (btn) {
+      setTimeout(() => btn.classList.remove('posting'), 500);
+    }
+  }
+}
+
+// ── Render buttons ────────────────────────────────────────────────
+function renderButtons() {
+  const grid = document.getElementById('buttonGrid');
+  grid.innerHTML = patterns.map(p => `
+    <button class="post-btn" data-id="${p.id}" onclick="postNote('${p.id}')">
+      <span class="post-btn-emoji">${p.emoji || '💬'}</span>
+      <span class="post-btn-name">${escHtml(p.name)}</span>
+    </button>
+  `).join('');
+}
+
+// ── Edit tab ──────────────────────────────────────────────────────
+function renderEdit() {
+  editBuffer = JSON.parse(JSON.stringify(patterns));
+  buildEditUI();
+}
+
+function buildEditUI() {
+  const sec = document.getElementById('editSection');
+  sec.innerHTML = editBuffer.map((p, pi) => `
+    <div class="pattern-editor" id="ped-${pi}">
+      <div class="pattern-header">
+        <input class="pattern-name-input" type="text" value="${escHtml(p.name)}"
+          oninput="editBuffer[${pi}].name = this.value" placeholder="ボタン名" />
+        <input class="pattern-emoji-input" type="text" value="${escHtml(p.emoji || '')}"
+          oninput="editBuffer[${pi}].emoji = this.value" placeholder="絵" maxlength="2" style="background:var(--bg);border:1px solid var(--border);border-radius:7px;font-size:1.3rem;width:3rem;text-align:center;color:var(--text);outline:none;" />
+        <button class="remove-pattern-btn" onclick="removePattern(${pi})">削除</button>
+      </div>
+      <div class="variants-list" id="vlist-${pi}">
+        ${p.variants.map((v, vi) => `
+          <div class="variant-row" id="vrow-${pi}-${vi}">
+            <input type="text" value="${escHtml(v)}"
+              oninput="editBuffer[${pi}].variants[${vi}] = this.value"
+              placeholder="定型文テキスト" />
+            <button class="del-btn" onclick="removeVariant(${pi},${vi})" title="削除">✕</button>
+          </div>
+        `).join('')}
+      </div>
+      <button class="add-variant-btn" onclick="addVariant(${pi})">＋ バリアントを追加</button>
+    </div>
+  `).join('');
+}
+
+function addVariant(pi) {
+  editBuffer[pi].variants.push('');
+  buildEditUI();
+}
+
+function removeVariant(pi, vi) {
+  editBuffer[pi].variants.splice(vi, 1);
+  buildEditUI();
+}
+
+function addPattern() {
+  if (editBuffer.length === 0) editBuffer = JSON.parse(JSON.stringify(patterns));
+  editBuffer.push({
+    id: 'pat_' + Date.now(),
+    name: '新しいパターン',
+    emoji: '💬',
+    variants: ['定型文1']
+  });
+  buildEditUI();
+}
+
+function removePattern(pi) {
+  editBuffer.splice(pi, 1);
+  buildEditUI();
+}
+
+function savePatterns() {
+  patterns = JSON.parse(JSON.stringify(editBuffer));
+  localStorage.setItem('qp_patterns', JSON.stringify(patterns));
+  renderButtons();
+  toast('保存しました ✓', 'ok');
+}
+
+function resetPatterns() {
+  if (!confirm('デフォルトのパターンに戻しますか？')) return;
+  editBuffer = JSON.parse(JSON.stringify(DEFAULT_PATTERNS));
+  buildEditUI();
+}
+
+// ── Toast ─────────────────────────────────────────────────────────
+let toastTimer;
+function toast(msg, type = '') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'show ' + type;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = ''; }, 2800);
+}
+
+// ── Util ──────────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+</script>
+</body>
+</html>
